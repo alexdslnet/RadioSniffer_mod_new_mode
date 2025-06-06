@@ -9,7 +9,8 @@
   Aвтор мода: Sudo Killa, Gluten, Глютюшушка, 2020
   Mod ver 1.0
   v 1.1
-  alexdsl - добавил мануальный режим(M), без засыпания, для возможности ручного сохранения нужного кода.
+  alexdsl - добавил мануальный режим, без засыпания, для возможности ручного сохранения нужного кода.
+  опция удаления ключа из EEPROM нажатием на кнопку влево
 */
 
 unsigned int came_sost = 0;
@@ -28,11 +29,13 @@ int var=0,i,ii=0,x,y;
 
 
 //settings
+
 #define prescal clock_div_4                     // делитель такотовой частоты
 #define serial_brate (uint32_t)9600 << prescal  // задаем скорость монитора порта 9600
 #define maxDataLog 160                          // длинна массива лог переключений. Максимум 64 bit + 2 sync bit 156
 #define minPause 5000 >> prescal                // минимальная длинна синхроимпуьса мкс
 #define maxPause 26000 >> prescal               // максимальная длинна синхроимпуьса мкс
+
 //pins
 #define rxPin 2         // выход приемника int0
 #define RVR_Vcc_Pin 4   // включение питания приемника
@@ -45,6 +48,9 @@ int var=0,i,ii=0,x,y;
 #define Btn_ok_Pin 3  // Кнопка оправки текущего кода
 #define Btn_left_Pin 5  // Кнопка влево
 #define Btn_right_Pin 6 // Кнопка вправо
+
+bool isDeleting = false;
+unsigned long deleteStartTime = 0;
 
 GButton btn_ok(Btn_ok_Pin);       // кнопка ОК
 GButton btn_left(Btn_left_Pin);   // кнопка влево
@@ -155,7 +161,7 @@ byte indxKeyInROM(tpKeyData* kd){ //возвращает индекс или н�
   return 0;
 }
 
-bool EPPROM_AddKey(tpKeyData* kd){
+bool EEPROM_AddKey(tpKeyData* kd){
   byte indx;
   indx = indxKeyInROM(kd);                 // ищем ключ в eeprom. Если находим, то не делаем запись, а индекс переводим в него
   if ( indx != 0) { 
@@ -242,6 +248,7 @@ void setup() {
   ADCSRA &= ~(1 << ADEN);               // Отключаем АЦП
   ADCSRB &= ~(1 << ACME);               // отключаем мультиплексор
   PRR |= (1 << PRADC) | (1 << PRSPI) | (1 << PRTIM1);      // Отключаем clock АЦП и шину SPI и таймер1
+  
 }
 
 String getTypeName(emKeys tp){
@@ -413,6 +420,33 @@ void sendSynthBit(int bt[2]){
       PORTB &= ~(1 << 1); //digitalWrite(txPin, LOW);
       myDelayMcs(-bt[i]);
     }    
+  }
+}
+
+void deleteKeyFromEEPROM(){
+  if (EEPROM_key_count > 0) {
+    EEPROM_key_count--;  // Reduce the count of stored keys
+    Serial.println(F("Deleting current key from EEPROM"));
+
+    // Shift remaining keys in EEPROM
+    for (byte i = EEPROM_key_index; i < EEPROM_key_count; i++) {
+      tpKeyData tempKey;
+      EEPROM_get_key(i + 1, &tempKey);
+      EEPROM.put(i * sizeof(tpKeyData), tempKey);
+    }
+
+    // Update EEPROM values
+    EEPROM.update(0, EEPROM_key_count);
+    EEPROM.update(1, EEPROM_key_index > EEPROM_key_count ? EEPROM_key_count : EEPROM_key_index);
+    
+    OLED_printError(F("Key deleted!"), false);
+    delay(200);
+    myOLED.clrScr();
+    if (EEPROM_key_count == 0)
+    {
+       myOLED.print(F("ROM has no keys yet."), 0, 12);
+    }
+    myOLED.update();
   }
 }
 
@@ -654,6 +688,11 @@ void loop() {
     myOLED.update();
     stTimer = millis();
   }
+
+  if (btn_left.isHold()) {
+    deleteKeyFromEEPROM();
+    stTimer = millis(); // Reset sleep timer
+  }
   
    if (btn_right.isHold() && btn_ok.isHold()){
     myOLED.clrScr();
@@ -683,7 +722,8 @@ void loop() {
     Sd_WriteStep();
     stTimer = millis();
     //Serial.println("OK");
-  } 
+  }
+  
   if (btn_left.isClick() && (EEPROM_key_count > 0)){       //при повороте энкодера листаем ключи из eeprom
     EEPROM_key_index--;
     if (EEPROM_key_index < 1) EEPROM_key_index = EEPROM_key_count;
@@ -693,7 +733,7 @@ void loop() {
     stTimer = millis();
     //Serial.println("L");
   }
-  if (btn_right.isClick() && (EEPROM_key_count > 0)){
+  if (btn_right.isClick() && (EEPROM_key_count > 0) && !isDeleting){
     EEPROM_key_index++;
     if (EEPROM_key_index > EEPROM_key_count) EEPROM_key_index = 1;
     EEPROM_get_key(EEPROM_key_index, &keyData1);
@@ -713,7 +753,7 @@ void loop() {
     //Serial.println("2");
   }
   if ((keyData1.codeLenth != 0) &&  btn_ok.isHolded()){     // Если зажать кнопкку - ключ сохранися в EEPROM
-    if (EPPROM_AddKey(&keyData1)) {
+    if (EEPROM_AddKey(&keyData1)) {
       OLED_printError(F("The key saved"), false);
       Sd_ReadOKK();
       delay(1000 >> prescal); 
@@ -738,7 +778,7 @@ void loop() {
     {
       if (snifferMode != smdManual)
       {
-        if (EPPROM_AddKey(&keyData1))
+        if (EEPROM_AddKey(&keyData1))
           {
             OLED_printError(F("The key saved"), false);
             Sd_ReadOKK();
@@ -752,6 +792,7 @@ void loop() {
     digitalWrite(G_Led, LOW);
   }
   if ((millis() - stTimer > (10000 >> prescal)) && (snifferMode == smdNormal)) go2sleep(); //засыпаем через 10 сек
+
 }
 
 //***************** звуки****************
